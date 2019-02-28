@@ -4,15 +4,16 @@ NC='\033[0m'
 SOURCEPATH=$(pwd)
 echo $SOURCEPATH
 
-# Install portaudio 
+# Install portaudio
 printf "${BLUETEXT}Installing Portaudio and dependecies${NC}\n"
 sudo apt-get install libasound-dev
-wget -O pafile.tgz "http://portaudio.com/archives/pa_stable_v190600_20161030.tgz" 
+wget -O pafile.tgz "http://portaudio.com/archives/pa_stable_v190600_20161030.tgz"
 tar -xvzf pafile.tgz
 cd portaudio
 ./configure
 sudo make install
 rm pafile.tgz
+cd ..
 rm -rf portaudio
 
 # Move to correct folder
@@ -77,7 +78,7 @@ printf "${BLUETEXT}...done.${NC}\n"
 export GOOGLEAPIS_GENS_PATH=$HOME/speech/googleapis/gens
 mkdir ar_file
 cd ar_file
-cp $SOURCEPATH/make_googleapis_ar.make ./
+cp $SOURCEPATH/scripts/make_googleapis_ar.make ./
 make -f make_googleapis_ar.make
 cd ..
 
