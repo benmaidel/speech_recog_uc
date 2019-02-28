@@ -141,6 +141,9 @@ public:
 // Globals
 typedef void vadcb (int N, bool isSpeech, void* vaddata);
 
+// External debug callback function
+typedef void debugcb(float energy, float min, float max, float mean, bool speech);
+
 class VADFSMachine{
 	//MACHINE STATES
 	enum STATES {STsilence, STpossible_speech, STspeech, STpossible_silence	};
@@ -164,15 +167,16 @@ class VADFSMachine{
 	float ymed_prev;
 	float ener_prev;
 	int nBackward;
+	debugcb * debugCallbackFkt;
 
 
 	void init(float setthOffset, int setcounterSpeech, int setcounterSil,
-		float setaval);
+		float setaval, debugcb * debugCbFkt);
 
 	public:
 		// Constructors
 		VADFSMachine(float thOffset = 15.0F, int counterSp = 5, int counterSil = 5,
-			float aConst = 0.8F);
+			float aConst = 0.8F, debugcb * debugCbFkt = NULL);
 
 
 		// Public Methods
@@ -283,16 +287,18 @@ class VADClass {
 	bool isFromFile;
 	char * filepath;
 	std::thread lookupthread;
+	bool recRunning;
 
 	PaError err;										// portaudio error controller
 	usercb * externalfunction;			// routine to consume the speech data
 	void * userdata;
+	debugcb * debugCallbackFkt;
 	
 	
 	//private methods
 	void init(usercb * usercallbackfunction, void * userdata, int fs, int nchan,
 		float chunkdur, int bufdur, float vadthoffset, int cntSpeek, int cntSilence,
-		float aTimeConst,bool isFile, char * file_path);
+		float aTimeConst,bool isFile, char * file_path, debugcb * debugCbFkt);
 	void vadinit(void);
 	void readWavHeader(wavHeader *wavhdr, FILE *fi);
 	void vadmachine_lookup_thread(void);
@@ -304,7 +310,7 @@ public:
 	VADClass(usercb * usercallbackfunction, void * userdata, int fs = 16000,
 		int nchan = 1, float chunkdur = 0.1, int bufdur = 15, float vadthoffset = 15,
 		int cntSpeek = 5, int cntSilence = 8, float aTimeConst = 0.8F, 
-		bool isFile = false, char* file_path = NULL);
+		bool isFile = false, char* file_path = NULL, debugcb * debugCbFkt = NULL);
 	void vadterminate(void);
 	void vadMachineAdjustParameters(float thOffset_new, int cntSpeek_new);
 	static int portAudioCallback(const void *inputBuffer, void *outputBuffer,
@@ -313,6 +319,8 @@ public:
 	void setusercallback(usercb * usercallback_new);
 	void stopStream(void);
 	void resumeStream(void);
+	void startRecognizing();
+	void stopRecognizing();
 };
 
 #endif

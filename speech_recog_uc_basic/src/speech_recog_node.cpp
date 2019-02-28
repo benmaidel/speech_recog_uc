@@ -51,6 +51,8 @@ though google cloud speech api
 #include "speech_node_classes.h"
 #include <actionlib/server/simple_action_server.h>
 #include <mojin_msgs/SpeechToTextAction.h>
+#include <std_msgs/Float32.h>
+#include <std_msgs/Bool.h>
 
 
 // Namespaces
@@ -103,13 +105,21 @@ ros::Publisher * words_pub;
 ros::Publisher * sentences_pub;
 actionlib::SimpleActionServer<mojin_msgs::SpeechToTextAction>* action_server;
 
+// Debug publisher
+ros::Publisher * energy_pub;
+ros::Publisher * min_pub;
+ros::Publisher * max_pub;
+ros::Publisher * mean_pub;
+ros::Publisher * speech_pub;
+
 
 /*
 The worker of the response handler thread
 Handles the google's response and publishes it in the correspondent ros topic
 */
 static void gResponseHandlerThread(
-	std::unique_ptr<grpc::ClientReaderWriter<writer,reader>>* streamer_ref ){
+	std::unique_ptr<grpc::ClientReaderWriter<writer,reader>>* streamer_ref )
+{
 	grpc::ClientReaderWriter<writer,reader> * streamer = streamer_ref->get();
 	StreamingRecognizeResponse response;
 	speech_recog_uc_basic::SpeechResult interim_sentence;
@@ -117,8 +127,8 @@ static void gResponseHandlerThread(
 		while(streamer->Read(&response)) {	//blocking function
 			auto result = response.results(0);
 			auto alternative = result.alternatives(0);
-			if(result.stability() > 0){ 
-				std::cout << "interim results: "<< alternative.confidence() 
+			if(result.stability() > 0){
+				std::cout << "interim results: "<< alternative.confidence()
 				<< " " << alternative.transcript() << std::endl;
 				interim_sentence.result = alternative.transcript();
 				interim_sentence.confidence = alternative.confidence();
@@ -127,6 +137,7 @@ static void gResponseHandlerThread(
 				feedback.text = alternative.transcript();
 				action_server->publishFeedback(feedback);
 			}
+			std::cout<<"isFinal: "<<result.is_final()<<std::endl;
 		}
 		auto result = response.results(0);
 		auto alternative = result.alternatives(0);
@@ -146,7 +157,7 @@ static void gResponseHandlerThread(
 		}
 		std::cout << "interim results: "<< alternative.confidence() << " " << alternative.transcript() << std::endl;
 		streamer_ref->reset();
-			
+
 	} catch (...){
 		ROS_WARN("Some error occured with the transcription, please retry");
 		// Returning an empty message to the DM
@@ -303,8 +314,21 @@ void preemptCB()
 	action_server->setPreempted();
 }
 
-
-
+static void publishDebugValues(float energy, float min, float max, float mean, bool speech)
+{
+	std_msgs::Float32 energy_msg; energy_msg.data=energy;
+	energy_pub->publish(energy_msg);
+	std_msgs::Float32 min_msg; min_msg.data=min;
+	min_pub->publish(min_msg);
+	std_msgs::Float32 max_msg; max_msg.data=max;
+	max_pub->publish(max_msg);
+	std_msgs::Float32 mean_msg; mean_msg.data=mean;
+	mean_pub->publish(mean_msg);
+	std_msgs::Float32 speech_msg;
+	if(speech) speech_msg.data=100;
+	else speech_msg.data=0;
+	speech_pub->publish(speech_msg);
+}
 
 
 int main(int argc, char* argv[]) {
@@ -328,13 +352,13 @@ int main(int argc, char* argv[]) {
 	\n\n rosrun speech_recog_uc_basic speech_recog_uc_basic_node [language]  \
 	\n\nExample:	\
 	\n rosrun speech_recog_uc_basic speech_recog_uc_basic_node pt-PT";
-	
+
 	char * lang = (char *) "en-EN";
 	char * read_file_pointer = NULL;
 	bool readFromFile = false;
-	
 
-	
+
+
 	// Process language
 	if(argc > 1){
 		if((std::string) argv[1] == "-h"){
@@ -370,10 +394,21 @@ int main(int argc, char* argv[]) {
 	ros::NodeHandle n;
 
 	words_pub = new ros::Publisher(n.advertise<speech_recog_uc_basic::SpeechResult>(
-		"/speech_recog_uc/words", 10));
+		"speech_recog_uc/words", 10));
 	sentences_pub = new ros::Publisher(n.advertise<speech_recog_uc_basic::SpeechResult>(
-		"/speech_recog_uc/sentences", 10));
-	
+		"speech_recog_uc/sentences", 10));
+
+	energy_pub = new ros::Publisher(n.advertise<std_msgs::Float32>(
+		"/speech_recog_uc/debug/energy", 1));
+	min_pub = new ros::Publisher(n.advertise<std_msgs::Float32>(
+		"/speech_recog_uc/debug/min", 1));
+	max_pub = new ros::Publisher(n.advertise<std_msgs::Float32>(
+		"/speech_recog_uc/debug/max", 1));
+	mean_pub = new ros::Publisher(n.advertise<std_msgs::Float32>(
+		"/speech_recog_uc/debug/mean", 1));
+	speech_pub = new ros::Publisher(n.advertise<std_msgs::Float32>(
+		"/speech_recog_uc/debug/speech", 1));
+
 	action_server = new actionlib::SimpleActionServer<mojin_msgs::SpeechToTextAction>(n, "speech_to_text", false);
 	action_server->registerGoalCallback(goalCB);
 	action_server->registerPreemptCallback(preemptCB);
@@ -392,10 +427,10 @@ int main(int argc, char* argv[]) {
 	user_structure_recog_pointers_container->streamer = NULL;
 	user_structure_recog_pointers_container->lang = lang;
 	user_structure_recog_pointers_container->file = new FILE();
-	
+
 
 	ROS_INFO("Initializing Voice Activity Detection Engine");
-	vc = new VADClass(speech_callback, 
+	vc = new VADClass(speech_callback,
 		user_structure_recog_pointers_container,
 		GLOBAL_SAMPLE_RATE,
 		GLOBLAL_NUMBER_OF_CHANNELS,
@@ -406,7 +441,8 @@ int main(int argc, char* argv[]) {
 		DEFAULT_VAD_INTERNAL_COUNTER_SIL,
 		VAD_WEIGHTING_UPDATE_CONST,
 		readFromFile,
-		read_file_pointer);
+		read_file_pointer,
+		publishDebugValues);
 
 	ROS_INFO("Voice Activity Detection Engine Initialized");
 

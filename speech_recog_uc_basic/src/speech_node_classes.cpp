@@ -51,15 +51,18 @@ Copyright (c) 2018 Universidade de Coimbra
 //=============================================================================
 VADClass::VADClass(usercb * usercallbackfunction, void * userdata, int fs, 
 	int nchan, float chunkdur, int bufdur, float vadthoffset, int cntSpeek, 
-	int cntSilence, float aTimeConst, bool isFile, char * file_path) {
+	int cntSilence, float aTimeConst, bool isFile, char * file_path, debugcb * debugCbFkt )
+	: recRunning(false)
+{
 	init(usercallbackfunction, userdata, fs, nchan, chunkdur, bufdur, 
-	vadthoffset, cntSpeek, cntSilence, aTimeConst,isFile,file_path);
+	vadthoffset, cntSpeek, cntSilence, aTimeConst, isFile, file_path, debugCbFkt);
 }
 
 //== init  ========================================================================
 void VADClass::init(usercb * usercallbackfunction, void * usrdta, int fs, 
 	int nchan, float chunkdur, int bufdur, float vadthoffset, int cntSpeek, 
-	int cntSilence, float aTimeConst, bool isFile, char * file_path) {
+	int cntSilence, float aTimeConst, bool isFile, char * file_path, debugcb * debugCbFkt)
+{
 	externalfunction = usercallbackfunction;
 	userdata = usrdta;
 	sample_rate = fs;
@@ -72,6 +75,7 @@ void VADClass::init(usercb * usercallbackfunction, void * usrdta, int fs,
 	aTemporalConst = aTimeConst;
 	isFromFile = isFile;
 	filepath = file_path;
+	debugCallbackFkt = debugCbFkt;
 	vadinit();
 }
 
@@ -84,35 +88,52 @@ void VADClass::vadmachine_lookup_thread(void){
 	int speech = 1;
 	int previous_state = silence; // silence
 	
-	while(true){
-		if(!cbuff->isEmpty()){
-			if(!vadmachine->isSpeech()){
-				if(previous_state == speech){
-					while(!cbuff->isEmpty()){
-						externalfunction(cbuff->getPointer(), cbuff->getChunkSizeBytes(), 
-							false, false, userdata);
-					} 
-					externalfunction(NULL,0,false,true,userdata);
-					previous_state = silence;
-				} else {
-					cbuff->pass();
-				}
-			} else {
-				if(previous_state == silence){
-					int sos_offset = vadmachine->getStartOfSpeechOffset();
-					cbuff->backward(sos_offset);
-					externalfunction(cbuff->getPointer(), cbuff->getChunkSizeBytes(), 
-						true, false, userdata);
-				}
-				
-				while(!cbuff->isEmpty()){
-					externalfunction(cbuff->getPointer(), cbuff->getChunkSizeBytes(), 
-						false, false, userdata);
-				}
-				previous_state = speech;
-			}
-		}
-	Pa_Sleep(90);
+  while(true){
+    if(recRunning)
+    {
+      if(!cbuff->isEmpty())
+      {
+        if(!vadmachine->isSpeech())
+        {
+          if(previous_state == speech)
+          {
+            while(!cbuff->isEmpty())
+            {
+              externalfunction(cbuff->getPointer(), cbuff->getChunkSizeBytes(),
+                false, false, userdata);
+            }
+            externalfunction(NULL,0,false,true,userdata);
+            previous_state = silence;
+          }
+          else
+          {
+            cbuff->pass();
+          }
+        } else
+        {
+          if(previous_state == silence)
+          {
+            int sos_offset = vadmachine->getStartOfSpeechOffset();
+            cbuff->backward(sos_offset);
+            externalfunction(cbuff->getPointer(), cbuff->getChunkSizeBytes(),
+              true, false, userdata);
+          }
+
+          while(!cbuff->isEmpty())
+          {
+            externalfunction(cbuff->getPointer(), cbuff->getChunkSizeBytes(),
+              false, false, userdata);
+          }
+          previous_state = speech;
+        }
+      }
+    }
+    else
+    {
+      if(!cbuff->isEmpty())
+        cbuff->pass();
+    }
+    Pa_Sleep(90);
 	}
 }
 
@@ -123,7 +144,7 @@ void VADClass::vadinit(void) {
 	cbuff = new CircularBuffer(num_channels, sample_rate, cbuffer_duration, 
 		chunk_duration); 
 	vadmachine = new VADFSMachine(vmachine_thresholdoffset, cntSpeech, cntSil, 
-		aTemporalConst);
+		aTemporalConst, debugCallbackFkt);
 
 	ROS_DEBUG("STARTUP THE VADMACHINE LOOKUP THREAD");
 	std::thread t(&VADClass::vadmachine_lookup_thread,this);
@@ -249,6 +270,14 @@ void VADClass::vadinit(void) {
 			Pa_Sleep(100);
 		}
 	}
+}
+
+void VADClass::startRecognizing(){
+	recRunning = true;
+}
+
+void VADClass::stopRecognizing(){
+	recRunning = false;
 }
 
 //==============================================================================
@@ -609,13 +638,13 @@ float CircularBuffer::computeRMS(int index) {
 //==============================================================================
 //== Length  & thOffset & counterSpeech & counterSil & a factor ================
 VADFSMachine::VADFSMachine(float setthOffset, int setcounterSpeech, 
-	int setcounterSil, float setaval){
-	init(setthOffset, setcounterSpeech, setcounterSil, setaval);
+  int setcounterSil, float setaval, debugcb * debugCbFkt){
+  init(setthOffset, setcounterSpeech, setcounterSil, setaval, debugCbFkt);
 }
 
 //== init ====================
 void VADFSMachine::init(float setthOffset, int setcounterSpeech, 
-	int setcounterSil, float setaval){
+  int setcounterSil, float setaval, debugcb * debugCbFkt){
 	timeOutInternalCounter =  DEFAULT_VAD_INTERNAL_TIMEOUT_COUNTER;
 	rstTimeOutInternalCounter = DEFAULT_VAD_INTERNAL_TIMEOUT_COUNTER;
 	thOffset = setthOffset;
@@ -630,6 +659,7 @@ void VADFSMachine::init(float setthOffset, int setcounterSpeech,
 	ymed_prev = 0;
 	ener_prev = 0;
 	nBackward = rstCounterSpeech+3;
+	debugCallbackFkt = debugCbFkt;
 }
 
 //==============================================================================
@@ -730,6 +760,9 @@ void VADFSMachine::updateStatus(float energy) {
 	ymax_prev = ymax;
 	ymed_prev = ymed;
 	ener_prev = energy;
+
+	if(debugCallbackFkt != NULL)
+		debugCallbackFkt(energy, ymin, ymax, ymed, isSpeech());
 }
 
 
