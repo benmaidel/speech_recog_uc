@@ -20,7 +20,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Developed by: 
+Developed by:
 Jose Pedro Oliveira, joliveira@deec.uc.pt
 Fernando Perdigao, fp@deec.uc.pt
 
@@ -34,22 +34,23 @@ Copyright (c) 2018 Universidade de Coimbra
 Main program to Speech Recognition.
 This software contains:
 * VADClass: a class that manages the audio acquisition, storage and processes it
- in order to determine 
-if the audio contains speech and when does it start and ends. 
+ in order to determine
+if the audio contains speech and when does it start and ends.
 This class implements:
-		- PortAudio or ReadFromFile: a function that reads audio from a file or 
+		- PortAudio or ReadFromFile: a function that reads audio from a file or
 		from a microphone
-		- VADFSMachine: finite state machine responsible to determine if the audio 
+		- VADFSMachine: finite state machine responsible to determine if the audio
 		is speech or not speech
-		- CircularBuffer: a cicrcular buffer that stores the audio 
+		- CircularBuffer: a cicrcular buffer that stores the audio
 * speech_callback function: a callback function that handles the
  audio that contains speech, sending it to the recognizer,
 though google cloud speech api
 */
 
-// Includes 
+// Includes
 #include "speech_node_classes.h"
-
+#include <actionlib/server/simple_action_server.h>
+#include <mojin_msgs/SpeechToTextAction.h>
 
 
 // Namespaces
@@ -68,9 +69,9 @@ Structure to contain the pointers needed during the recognition
 This pointers are needed to send data to google and retrieve the response
 while the VADClass returns speech audio.
 
-In other words, once the callback dies, its vars also dies, so, it's 
+In other words, once the callback dies, its vars also dies, so, it's
 necessary to store the information about the streamer and the context of a given
-audio-speech (from the start of speech untid the end of speech). 
+audio-speech (from the start of speech untid the end of speech).
 Those pointers are initialized on Start Of Speech, creating a new comu. channel.
 Then, they are stored in recog_pointers_data_structures until the end of speech.
 At the end of speech, the objects are destoyed.
@@ -100,6 +101,8 @@ std::string maindir = home + "/speech";
 // Global ROS Stuff
 ros::Publisher * words_pub;
 ros::Publisher * sentences_pub;
+actionlib::SimpleActionServer<mojin_msgs::SpeechToTextAction>* action_server;
+
 
 /*
 The worker of the response handler thread
@@ -120,6 +123,9 @@ static void gResponseHandlerThread(
 				interim_sentence.result = alternative.transcript();
 				interim_sentence.confidence = alternative.confidence();
 				words_pub->publish(interim_sentence);
+				mojin_msgs::SpeechToTextFeedback feedback;
+				feedback.text = alternative.transcript();
+				action_server->publishFeedback(feedback);
 			}
 		}
 		auto result = response.results(0);
@@ -131,8 +137,14 @@ static void gResponseHandlerThread(
 		sentence.result = alternative.transcript();
 		sentence.confidence = alternative.confidence();
 		sentences_pub->publish(sentence);
-		std::cout << "interim results: "<< alternative.confidence() 
-		<< " " << alternative.transcript() << std::cout;
+		if(action_server->isActive())
+		{
+			mojin_msgs::SpeechToTextResult result;
+			result.text = alternative.transcript();
+			action_server->setSucceeded(result);
+			vc->stopRecognizing();
+		}
+		std::cout << "interim results: "<< alternative.confidence() << " " << alternative.transcript() << std::endl;
 		streamer_ref->reset();
 			
 	} catch (...){
@@ -142,7 +154,12 @@ static void gResponseHandlerThread(
 		bad_transcription.result = "";
 		bad_transcription.confidence = 0;
 		sentences_pub->publish(bad_transcription);
-	 }
+
+//		mojin_msgs::SpeechToTextResult result;
+//		result.text = "";
+//		action_server->setAborted(result);
+		vc->stopRecognizing();
+	}
 }
 
 
@@ -153,21 +170,21 @@ and the speech_callback is evoked.
 On the first speech-chunk, i.e., on start of speech, the callback generates
 a channel to comunicates with google cloud speech api and stores the pointers
 on a google_pointers_data_structure so they can be used after the callback dies
-On the last speech-chunk, i.e., at the end of speech, the callback retreives 
+On the last speech-chunk, i.e., at the end of speech, the callback retreives
 the response and deletes all pointers, closing the communication channel
 On the meantime, while speech chunks are arriving, they're only sended to google
 */
 static void speech_callback(short * data, int readbyteSize, bool isSOS,
 	bool isEOS, void * extradata) {
 	// callback to put audio data in a raw file
-	recog_pointers_data_structures * recog_pointers = 
+	recog_pointers_data_structures * recog_pointers =
 		(recog_pointers_data_structures *)extradata;
 	grpc::Status status;
 	bool aa;
 	const size_t bytes_read = readbyteSize;
 	int array_length = readbyteSize/sizeof(short); //num of shorts in the buffer
 
-	// handling the file writting 
+	// handling the file writting
 
 	if (isSOS) {
 		/* START OF SPEECH CHUNK */
@@ -175,11 +192,11 @@ static void speech_callback(short * data, int readbyteSize, bool isSOS,
 		ROS_INFO("isSOS ------------------ New recognition started.");
 		if(GLOBAL_OUTPUT_MODE){
 			char name[100];
-			std::chrono::milliseconds ms = 
+			std::chrono::milliseconds ms =
 			std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::system_clock::now().time_since_epoch());
-			
-			snprintf(name, sizeof(char) * 100, 
+
+			snprintf(name, sizeof(char) * 100,
 				"/recordings/recognition_audio_%ld.wav", ms.count());
 			char pathname[200]; strcpy(pathname,maindir.c_str()); strcat(pathname,name);
 			ROS_INFO("New file created: %s\n", pathname);
@@ -192,38 +209,38 @@ static void speech_callback(short * data, int readbyteSize, bool isSOS,
 			strncpy(recog_pointers->header_for_test->fmt, "WAVEfmt ",8);
 			recog_pointers->header_for_test->fmtSize = 16;
 			recog_pointers->header_for_test->fmtTag = 1;
-			recog_pointers->header_for_test->nchan = GLOBLAL_NUMBER_OF_CHANNELS; 
-			recog_pointers->header_for_test->fs = GLOBAL_SAMPLE_RATE;       
-			recog_pointers->header_for_test->avgBps = 
-			GLOBAL_SAMPLE_RATE * GLOBLAL_NUMBER_OF_CHANNELS * sizeof(short); 
-			recog_pointers->header_for_test->nBlockAlign = 
+			recog_pointers->header_for_test->nchan = GLOBLAL_NUMBER_OF_CHANNELS;
+			recog_pointers->header_for_test->fs = GLOBAL_SAMPLE_RATE;
+			recog_pointers->header_for_test->avgBps =
+			GLOBAL_SAMPLE_RATE * GLOBLAL_NUMBER_OF_CHANNELS * sizeof(short);
+			recog_pointers->header_for_test->nBlockAlign =
 				GLOBLAL_NUMBER_OF_CHANNELS * sizeof(short);
 
-			// Uncomment the follow lines and comment the 4 lines above to store in 
+			// Uncomment the follow lines and comment the 4 lines above to store in
 			// a file what is sent to google
-			// recog_pointers->header_for_test->nchan = 1; 
-			// recog_pointers->header_for_test->fs = 16000; 
+			// recog_pointers->header_for_test->nchan = 1;
+			// recog_pointers->header_for_test->fs = 16000;
 			// recog_pointers->header_for_test->avgBps = 16000 * 1 * sizeof(short);
 			// recog_pointers->header_for_test->nBlockAlign = 1 *sizeof(short);
 
-			recog_pointers->header_for_test->bps = 16; 
+			recog_pointers->header_for_test->bps = 16;
 			strncpy(recog_pointers->header_for_test->data, "data", 4);
 			recog_pointers->header_for_test->datasize = 0;
 
-			fwrite(recog_pointers->header_for_test, 
+			fwrite(recog_pointers->header_for_test,
 				sizeof(*(recog_pointers->header_for_test)), 1, recog_pointers->file);
 		}
 
 		auto creds = grpc::GoogleDefaultCredentials();
 		auto channel = grpc::CreateChannel("speech.googleapis.com", creds);
 		recog_pointers->speech_p = Speech::NewStub(channel);
-								
+
 		StreamingRecognizeRequest request;
 		auto* streaming_config_ = request.mutable_streaming_config();
 		RecognitionConfig * streaming_config = streaming_config_->mutable_config();
-		
+
 		// CONFIGURATIONS// <<<<<<<<<<<<<<<<<<<<<<<<<
-		streaming_config->set_language_code(recog_pointers->lang);						 
+		streaming_config->set_language_code(recog_pointers->lang);
 		streaming_config->set_sample_rate_hertz(GOOGLE_STREAMING_CONFIG_SAMPLE_RATE);
 		streaming_config->set_encoding(RecognitionConfig::LINEAR16);
 		streaming_config_->set_interim_results(true);
@@ -233,33 +250,33 @@ static void speech_callback(short * data, int readbyteSize, bool isSOS,
 		recog_pointers->streamer = recog_pointers->speech_p->StreamingRecognize(
 			recog_pointers->context_ptr);
 		recog_pointers->streamer->Write(request);
-		recog_pointers->m_thread = std::thread(gResponseHandlerThread, 
+		recog_pointers->m_thread = std::thread(gResponseHandlerThread,
 			&recog_pointers->streamer);
 
 		StreamingRecognizeRequest new_request;
-		new_request.set_audio_content(data,bytes_read); 
-		aa = (recog_pointers->streamer.get())->Write(new_request); 
+		new_request.set_audio_content(data,bytes_read);
+		aa = (recog_pointers->streamer.get())->Write(new_request);
 
 	}
 
 	if(!isEOS){
-		if(GLOBAL_OUTPUT_MODE){	
+		if(GLOBAL_OUTPUT_MODE){
 			fwrite(data, readbyteSize, 1, recog_pointers->file);
-		} 
+		}
 		StreamingRecognizeRequest request;
 		request.set_audio_content(data,bytes_read);
-		aa = (recog_pointers->streamer.get())->Write(request);	
+		aa = (recog_pointers->streamer.get())->Write(request);
 	}
 
 	if(isEOS){
-		/* END OF SPEECH CHUNK */		
+		/* END OF SPEECH CHUNK */
 		ROS_INFO("isEOS ------------------ Recognition stoped.");
 		if(GLOBAL_OUTPUT_MODE){
 			int fsize = ftell(recog_pointers->file);
 			rewind(recog_pointers->file);
-			recog_pointers->header_for_test->datasize = 
+			recog_pointers->header_for_test->datasize =
 				fsize - sizeof(*(recog_pointers->header_for_test));
-			recog_pointers->header_for_test->RIFFsize = 
+			recog_pointers->header_for_test->RIFFsize =
 				fsize - sizeof(*(recog_pointers->header_for_test)) + 36;
 			fwrite(recog_pointers->header_for_test,
 				sizeof(*(recog_pointers->header_for_test)), 1, recog_pointers->file);
@@ -268,13 +285,23 @@ static void speech_callback(short * data, int readbyteSize, bool isSOS,
 		// finishes the publication in google's pipe
 		aa = (recog_pointers->streamer.get())->WritesDone();
 		//If the internet connection fails, the thread will close after a few seconds
-		recog_pointers->m_thread.join(); //detach induces a segmentation fault 
+		recog_pointers->m_thread.join(); //detach induces a segmentation fault
 		recog_pointers->streamer = NULL;
 		delete recog_pointers->context_ptr;
 	}
 }
 
+void goalCB()
+{
+	mojin_msgs::SpeechToTextGoalConstPtr goal = action_server->acceptNewGoal();
+	vc->startRecognizing();
+}
 
+void preemptCB()
+{
+	vc->stopRecognizing();
+	action_server->setPreempted();
+}
 
 
 
@@ -347,11 +374,15 @@ int main(int argc, char* argv[]) {
 	sentences_pub = new ros::Publisher(n.advertise<speech_recog_uc_basic::SpeechResult>(
 		"/speech_recog_uc/sentences", 10));
 	
+	action_server = new actionlib::SimpleActionServer<mojin_msgs::SpeechToTextAction>(n, "speech_to_text", false);
+	action_server->registerGoalCallback(goalCB);
+	action_server->registerPreemptCallback(preemptCB);
+
 
 	ROS_INFO("---------------------------------");
-	ROS_INFO("Defined language: %s", lang);		
+	ROS_INFO("Defined language: %s", lang);
 	ROS_INFO(GLOBAL_OUTPUT_MODE ? "Recognition output mode ON":"Recognition\
-		output mode OFF");		
+		output mode OFF");
 	ROS_INFO("--------------------------------\n");
 
 
@@ -379,7 +410,8 @@ int main(int argc, char* argv[]) {
 
 	ROS_INFO("Voice Activity Detection Engine Initialized");
 
-	
+	action_server->start();
+
 	ros::spin();
 
 	vc->vadterminate();
